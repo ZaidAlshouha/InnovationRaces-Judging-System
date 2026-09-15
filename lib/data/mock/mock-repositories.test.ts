@@ -1,0 +1,181 @@
+import { beforeEach, describe, expect, it } from "vitest";
+import { resetMockStore } from "./store";
+import { MockAssignmentRepository } from "./assignment-repository";
+import { MockEvaluationRepository } from "./evaluation-repository";
+import { MockResultsRepository } from "./results-repository";
+import { MockAuthRepository } from "./auth-repository";
+import { AssignmentStatus } from "@/lib/domain/assignment";
+import { HACKATHON_ID } from "@/mock-data/hackathons";
+
+beforeEach(() => {
+  resetMockStore();
+});
+
+describe("MockAssignmentRepository", () => {
+  it("rejects a duplicate (judge, project) assignment", async () => {
+    const repo = new MockAssignmentRepository();
+    await expect(
+      repo.create({
+        hackathonId: HACKATHON_ID,
+        judgeId: "judge-ahmad",
+        projectId: "project-001",
+      })
+    ).rejects.toThrow();
+  });
+
+  it("allows a new (judge, project) pair not already assigned", async () => {
+    const repo = new MockAssignmentRepository();
+    const created = await repo.create({
+      hackathonId: HACKATHON_ID,
+      judgeId: "judge-faisal",
+      projectId: "project-001",
+    });
+    expect(created.status).toBe(AssignmentStatus.Pending);
+  });
+});
+
+describe("MockEvaluationRepository", () => {
+  it("submitting an evaluation marks the assignment completed", async () => {
+    const assignmentRepo = new MockAssignmentRepository();
+    const evaluationRepo = new MockEvaluationRepository();
+
+    const assignment = await assignmentRepo.create({
+      hackathonId: HACKATHON_ID,
+      judgeId: "judge-faisal",
+      projectId: "project-002",
+    });
+
+    await evaluationRepo.submit("judge-faisal", {
+      assignmentId: assignment.id,
+      scores: [
+        { criterionId: "criterion-innovation", score: 8 },
+        { criterionId: "criterion-impact", score: 9 },
+        { criterionId: "criterion-feasibility", score: 7 },
+        { criterionId: "criterion-presentation", score: 8 },
+      ],
+    });
+
+    const updated = await assignmentRepo.getById(assignment.id);
+    expect(updated?.status).toBe(AssignmentStatus.Completed);
+  });
+
+  it("rejects a second submission on an already-submitted evaluation", async () => {
+    const evaluationRepo = new MockEvaluationRepository();
+
+    // assign-001 (judge-ahmad, project-001) is already submitted in fixtures.
+    await expect(
+      evaluationRepo.submit("judge-ahmad", {
+        assignmentId: "assign-001",
+        scores: [
+          { criterionId: "criterion-innovation", score: 5 },
+          { criterionId: "criterion-impact", score: 5 },
+          { criterionId: "criterion-feasibility", score: 5 },
+          { criterionId: "criterion-presentation", score: 5 },
+        ],
+      })
+    ).rejects.toThrow();
+  });
+
+  it("rejects submission by a judge who does not own the assignment", async () => {
+    const evaluationRepo = new MockEvaluationRepository();
+    await expect(
+      evaluationRepo.submit("judge-mohammed", {
+        assignmentId: "assign-001", // belongs to judge-ahmad
+        scores: [
+          { criterionId: "criterion-innovation", score: 5 },
+          { criterionId: "criterion-impact", score: 5 },
+          { criterionId: "criterion-feasibility", score: 5 },
+          { criterionId: "criterion-presentation", score: 5 },
+        ],
+      })
+    ).rejects.toThrow();
+  });
+
+  it("reopen unlocks a submitted evaluation and reverts assignment to in_progress", async () => {
+    const evaluationRepo = new MockEvaluationRepository();
+    const assignmentRepo = new MockAssignmentRepository();
+
+    const evaluation = await evaluationRepo.getByAssignmentId("assign-001");
+    expect(evaluation).not.toBeNull();
+
+    const reopened = await evaluationRepo.reopen(evaluation!.id, "user-admin-demo");
+    expect(reopened.status).toBe("draft");
+
+    const assignment = await assignmentRepo.getById("assign-001");
+    expect(assignment?.status).toBe(AssignmentStatus.InProgress);
+
+    // Now resubmission should succeed since it is no longer locked.
+    const resubmitted = await evaluationRepo.submit("judge-ahmad", {
+      assignmentId: "assign-001",
+      scores: [
+        { criterionId: "criterion-innovation", score: 10 },
+        { criterionId: "criterion-impact", score: 10 },
+        { criterionId: "criterion-feasibility", score: 10 },
+        { criterionId: "criterion-presentation", score: 10 },
+      ],
+    });
+    expect(resubmitted.status).toBe("submitted");
+  });
+});
+
+describe("MockResultsRepository", () => {
+  it("computes complete projects with a final score and rank", async () => {
+    const repo = new MockResultsRepository();
+    const results = await repo.getProjectResults(HACKATHON_ID);
+
+    const complete = results.filter((r) => r.isComplete);
+    expect(complete.length).toBeGreaterThan(0);
+    complete.forEach((r) => {
+      expect(r.finalScore).not.toBeNull();
+      expect(r.rank).not.toBeNull();
+    });
+  });
+
+  it("never assigns a rank or final score to an incomplete project", async () => {
+    const repo = new MockResultsRepository();
+    const results = await repo.getProjectResults(HACKATHON_ID);
+
+    const incomplete = results.filter((r) => !r.isComplete);
+    expect(incomplete.length).toBeGreaterThan(0);
+    incomplete.forEach((r) => {
+      expect(r.finalScore).toBeNull();
+      expect(r.rank).toBeNull();
+    });
+  });
+
+  it("orders complete projects by descending final score", async () => {
+    const repo = new MockResultsRepository();
+    const results = await repo.getProjectResults(HACKATHON_ID);
+    const completeScores = results
+      .filter((r) => r.isComplete && r.finalScore !== null)
+      .map((r) => r.finalScore as number);
+
+    for (let i = 1; i < completeScores.length; i++) {
+      expect(completeScores[i]).toBeLessThanOrEqual(completeScores[i - 1]);
+    }
+  });
+});
+
+describe("MockAuthRepository (prototype auth)", () => {
+  it("signs in the demo admin account", async () => {
+    const repo = new MockAuthRepository();
+    const user = await repo.signIn("admin@innovationraces.demo", "any-password");
+    expect(user?.role).toBe("admin");
+  });
+
+  it("signs in a seeded judge by real email", async () => {
+    const repo = new MockAuthRepository();
+    const user = await repo.signIn(
+      "ahmad.almutairi@innovationraces.demo",
+      "any-password"
+    );
+    expect(user?.role).toBe("judge");
+    expect(user?.judgeId).toBe("judge-ahmad");
+  });
+
+  it("returns null for an unknown email", async () => {
+    const repo = new MockAuthRepository();
+    const user = await repo.signIn("unknown@example.com", "x");
+    expect(user).toBeNull();
+  });
+});
