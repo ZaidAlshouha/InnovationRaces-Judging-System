@@ -9,7 +9,9 @@ export class SupabaseAuthRepository implements AuthRepository {
       password,
     });
 
-    if (error || !data.user) return null;
+    if (error) throw new Error(error.message);
+    if (!data.user) return null;
+
     return buildDomainUser(data.user.id);
   }
 
