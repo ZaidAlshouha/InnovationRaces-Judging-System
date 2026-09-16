@@ -17,11 +17,8 @@ export default function Home() {
         </p>
       </div>
       <div className="flex flex-col gap-3 sm:flex-row">
-        <Button size="lg" render={<Link href="/admin" />}>
-          دخول المسؤول
-        </Button>
-        <Button size="lg" variant="outline" render={<Link href="/judge" />}>
-          دخول المحكّم
+        <Button size="lg" render={<Link href="/login" />}>
+          تسجيل الدخول
         </Button>
       </div>
     </main>
