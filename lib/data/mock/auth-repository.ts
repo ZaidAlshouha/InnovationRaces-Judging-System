@@ -22,16 +22,24 @@ const DEMO_ADMIN: User = {
 const SESSION_STORAGE_KEY = "ir_demo_session_user_id";
 
 function findJudgeUser(email: string): User | null {
-  const judge = getMockStore().judges.find(
+  // A real auth identity can hold one judges row per hackathon (see
+  // docs/supabase-schema.md "Auth linkage"), so match every row sharing
+  // this email, not just the first — mirrors handle_new_auth_user() in
+  // supabase/migrations/002_auth_linkage.sql.
+  const judges = getMockStore().judges.filter(
     (j) => j.email.toLowerCase() === email.toLowerCase()
   );
-  if (!judge) return null;
+  const [primary] = judges;
+  if (!primary) return null;
   return {
-    id: `user-${judge.id}`,
-    email: judge.email,
-    name: judge.name,
+    id: `user-${primary.id}`,
+    email: primary.email,
+    name: primary.name,
     role: UserRole.Judge,
-    judgeId: judge.id,
+    judgeId: primary.id,
+    judgeIdsByHackathon: Object.fromEntries(
+      judges.map((j) => [j.hackathonId, j.id])
+    ),
   };
 }
 

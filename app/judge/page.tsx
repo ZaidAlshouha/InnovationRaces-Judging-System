@@ -4,7 +4,11 @@ import * as React from "react";
 import Link from "next/link";
 import { ClipboardList, ExternalLink } from "lucide-react";
 import { useAuth } from "@/lib/auth/auth-context";
-import { useJudgeAssignmentsWithProjects } from "@/lib/queries/use-judge-assignments";
+import {
+  useJudgeAssignmentsWithProjects,
+  useJudgeAssignmentsAcrossHackathons,
+} from "@/lib/queries/use-judge-assignments";
+import { useHackathons } from "@/lib/queries/use-hackathons";
 import { AssignmentStatus, ASSIGNMENT_STATUS_LABELS_AR } from "@/lib/domain/assignment";
 import { PageHeader } from "@/components/layout/page-header";
 import { EmptyState } from "@/components/layout/empty-state";
@@ -12,6 +16,7 @@ import { ErrorState } from "@/components/layout/error-state";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Card,
   CardContent,
@@ -30,11 +35,55 @@ const STATUS_VARIANT: Record<
 
 export default function JudgeAssignmentsPage() {
   const { user } = useAuth();
-  const assignmentsQuery = useJudgeAssignmentsWithProjects(user?.judgeId);
+  const judgeIdsByHackathon = user?.judgeIdsByHackathon;
+  const hackathonIds = React.useMemo(
+    () => Object.keys(judgeIdsByHackathon ?? {}),
+    [judgeIdsByHackathon]
+  );
+  const isMultiHackathon = hackathonIds.length > 1;
 
-  const rows = React.useMemo(
-    () => assignmentsQuery.data ?? [],
-    [assignmentsQuery.data]
+  // Single-hackathon judges (the common case, and every judge today) keep
+  // using the original single-judgeId query untouched.
+  const singleAssignmentsQuery = useJudgeAssignmentsWithProjects(
+    isMultiHackathon ? undefined : user?.judgeId
+  );
+
+  const multiAssignmentsQuery = useJudgeAssignmentsAcrossHackathons(
+    isMultiHackathon ? judgeIdsByHackathon : undefined
+  );
+  const hackathonsQuery = useHackathons();
+
+  const [selectedHackathonId, setSelectedHackathonId] = React.useState<
+    string | undefined
+  >(undefined);
+
+  const groups = React.useMemo(
+    () => multiAssignmentsQuery.data ?? [],
+    [multiAssignmentsQuery.data]
+  );
+
+  const activeHackathonId = selectedHackathonId ?? groups[0]?.hackathonId;
+
+  const rows = isMultiHackathon
+    ? groups.find((g) => g.hackathonId === activeHackathonId)?.rows ?? []
+    : singleAssignmentsQuery.data ?? [];
+
+  const isLoading = isMultiHackathon
+    ? multiAssignmentsQuery.isLoading
+    : singleAssignmentsQuery.isLoading;
+  const isError = isMultiHackathon
+    ? multiAssignmentsQuery.isError
+    : singleAssignmentsQuery.isError;
+  const isSuccess = isMultiHackathon
+    ? multiAssignmentsQuery.isSuccess
+    : singleAssignmentsQuery.isSuccess;
+  const refetch = isMultiHackathon
+    ? multiAssignmentsQuery.refetch
+    : singleAssignmentsQuery.refetch;
+
+  const hackathonNameById = React.useMemo(
+    () => new Map((hackathonsQuery.data ?? []).map((h) => [h.id, h.name])),
+    [hackathonsQuery.data]
   );
 
   const completedCount = rows.filter(
@@ -52,14 +101,30 @@ export default function JudgeAssignmentsPage() {
         }
       />
 
-      {assignmentsQuery.isError && (
+      {isMultiHackathon && groups.length > 1 && (
+        <Tabs
+          value={activeHackathonId}
+          onValueChange={(value) => setSelectedHackathonId(value as string)}
+          className="mb-4"
+        >
+          <TabsList>
+            {groups.map((g) => (
+              <TabsTrigger key={g.hackathonId} value={g.hackathonId}>
+                {hackathonNameById.get(g.hackathonId) ?? g.hackathonId}
+              </TabsTrigger>
+            ))}
+          </TabsList>
+        </Tabs>
+      )}
+
+      {isError && (
         <ErrorState
           description="تعذّر تحميل قائمة المشاريع المُسندة إليك."
-          onRetry={() => assignmentsQuery.refetch()}
+          onRetry={() => refetch()}
         />
       )}
 
-      {assignmentsQuery.isLoading && (
+      {isLoading && (
         <div className="space-y-3">
           {Array.from({ length: 3 }).map((_, i) => (
             <Skeleton key={i} className="h-24 w-full" />
@@ -67,7 +132,7 @@ export default function JudgeAssignmentsPage() {
         </div>
       )}
 
-      {assignmentsQuery.isSuccess && rows.length === 0 && (
+      {isSuccess && rows.length === 0 && (
         <EmptyState
           icon={ClipboardList}
           title="لا توجد مشاريع مُسندة إليك بعد"
@@ -75,7 +140,7 @@ export default function JudgeAssignmentsPage() {
         />
       )}
 
-      {assignmentsQuery.isSuccess && rows.length > 0 && (
+      {isSuccess && rows.length > 0 && (
         <div className="space-y-3">
           {rows.map(({ assignment, project }) => (
             <Card key={assignment.id}>

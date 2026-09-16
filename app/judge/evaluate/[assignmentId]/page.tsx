@@ -84,8 +84,15 @@ export default function EvaluateProjectPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [criteria, evaluation?.id]);
 
+  // The signed-in judge may hold one Judge record per hackathon (see
+  // docs/supabase-schema.md "Auth linkage"); resolve the one that matches
+  // this assignment's hackathon rather than assuming a single judgeId.
+  const judgeIdForAssignment = assignment
+    ? user?.judgeIdsByHackathon?.[assignment.hackathonId] ?? user?.judgeId
+    : user?.judgeId;
+
   async function onSubmit(values: ScoreFormValues) {
-    if (!assignment || !user?.judgeId) return;
+    if (!assignment || !user || !judgeIdForAssignment) return;
 
     const missing = criteria.filter((c) => {
       const entry = values.scores.find((s) => s.criterionId === c.id);
@@ -98,7 +105,7 @@ export default function EvaluateProjectPage() {
 
     try {
       const evaluation = await submitMutation.mutateAsync({
-        judgeId: user.judgeId,
+        judgeId: judgeIdForAssignment,
         input: {
           assignmentId: assignment.id,
           scores: values.scores.map((s) => ({
@@ -158,7 +165,7 @@ export default function EvaluateProjectPage() {
     );
   }
 
-  if (user?.judgeId && assignment.judgeId !== user.judgeId) {
+  if (judgeIdForAssignment && assignment.judgeId !== judgeIdForAssignment) {
     return (
       <div className="mx-auto max-w-2xl">
         <ErrorState title="لا يمكنك الوصول إلى هذا التقييم" />

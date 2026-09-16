@@ -11,41 +11,76 @@ exists so the migration is a checklist, not a redesign, when the time comes.
 - RLS policies from that document applied and tested with the Supabase SQL
   editor / `psql` before any application code depends on them.
 
-## 2. Implement Supabase repositories
+## 2. Implement Supabase repositories — done
 
-For each interface in `lib/data/repositories.ts`, add a matching class under
-`lib/data/supabase/`, e.g. `SupabaseProjectRepository implements
-ProjectRepository`. Each method:
+Implemented under `lib/data/supabase/` (one class per interface in
+`lib/data/repositories.ts`), sharing mappers/helpers from
+`lib/data/supabase/shared.ts`:
 
-- Uses the Supabase JS client (`@supabase/supabase-js`) scoped to the
-  request (server component / route handler client, not a shared singleton,
-  so RLS sees the correct `auth.uid()`).
-- Maps Postgres snake_case rows to the camelCase domain types via a small
-  `toDomain(row)` mapper function per repository — keeps the domain layer
-  ignorant of the wire format.
-- Re-throws Postgres/RLS errors as the same domain-level Error messages the
-  mock repositories already throw (e.g. "هذا المحكّم مُعيّن بالفعل لهذا
-  المشروع"), so UI error handling doesn't need to change.
+- Every method uses the singleton **browser client**
+  (`lib/supabase/client.ts`, via `@supabase/ssr`'s `createBrowserClient`) —
+  not a service-role key — since the app is entirely client-rendered today
+  (no middleware, no server components gating routes). This means RLS always
+  sees the signed-in user's real `auth.uid()`, never an elevated session.
+  A server/SSR client was deliberately not added in this phase — see the
+  note below.
+- Postgres snake_case rows are mapped to camelCase domain types via
+  `*ToDomain()` functions in `shared.ts`, typed against
+  `lib/supabase/types.ts` (hand-written to match
+  `001_initial_schema.sql` + `002_auth_linkage.sql`, not CLI-generated).
+- Known failures are re-thrown as the same Arabic Error messages the mock
+  repositories throw (duplicate assignment, not-found, wrong-judge,
+  already-submitted), via `translatePostgresError()` in `shared.ts` or
+  inline checks, so UI error handling doesn't need to change.
+- **Known gap:** `SupabaseEvaluationRepository.submit()` performs its
+  evaluation-upsert, score-replace, and assignment-status-flip as three
+  sequential client calls, not one atomic transaction — documented in that
+  file. Closing this requires a Postgres RPC (e.g. `submit_evaluation()`)
+  that has not been written or run against the database yet. This is the
+  one piece of step 2 intentionally deferred to a future phase; it does not
+  block using the Supabase backend, since a mid-sequence failure only risks
+  a brief, self-evident status mismatch (evaluation submitted, assignment
+  still `in_progress`), not data loss or incorrect scoring.
+- Not yet added: a server/SSR Supabase client, middleware, or converting any
+  page to a server component. `RequireRole` (`lib/auth/require-role.tsx`)
+  continues to be the only route guard, exactly as before — RLS remains the
+  actual security boundary, not route-level gating.
 
-## 3. Swap the composition root
+## 3. Swap the composition root — done, but flag-gated rather than hardcoded
 
-`lib/data/index.ts` currently exports `new Mock*Repository()` instances.
-Change each line to `new Supabase*Repository()` — one file, one diff. Do this
-per-repository if useful (e.g. migrate `ProjectRepository` first, verify,
-then `JudgeRepository`), since nothing else imports the mock classes
-directly.
+`lib/data/index.ts` now reads `NEXT_PUBLIC_DATA_BACKEND` and constructs
+either the `Mock*` or `Supabase*` instance per repository, defaulting to
+`mock` when unset (see step 6 — this flag is being kept permanently, not
+just as a transitional step). Nothing else imports the mock or Supabase
+classes directly.
 
-## 4. Replace mock auth with Supabase Auth
+## 4. Replace mock auth with Supabase Auth — done
 
-- Add `SupabaseAuthRepository implements AuthRepository`, backed by
-  `supabase.auth.signInWithPassword` (or magic link, if preferred for
-  judges).
+- `SupabaseAuthRepository implements AuthRepository`
+  (`lib/data/supabase/auth-repository.ts`), backed by
+  `supabase.auth.signInWithPassword` / `getUser()` / `signOut()`.
+- `buildDomainUser()` (`lib/data/supabase/shared.ts`) resolves the full
+  `User` after sign-in: reads `public.users` for role/name, then **every**
+  `public.judges` row linked to that auth identity (not just one), to
+  populate both `judgeId` (first/primary, back-compat) and
+  `judgeIdsByHackathon` (the full per-hackathon map) — see "Auth linkage" in
+  `docs/supabase-schema.md`. `app/judge/page.tsx` and
+  `app/judge/evaluate/[assignmentId]/page.tsx` already consume
+  `judgeIdsByHackathon` generically, so no further app changes were needed.
 - The `judges` table gains real rows tied to `auth.users` via `user_id` once
-  each judge accepts an invite and creates an account.
-- Remove `lib/data/mock/auth-repository.ts`'s localStorage session hack;
-  session state comes from Supabase's own client-side session management.
-- No changes needed to any component that calls `authRepository.signIn(...)`
-  or `useCurrentUser()` — same interface, different implementation.
+  each judge accepts an invite and creates an account — this linkage is
+  handled automatically by the `002_auth_linkage.sql` triggers
+  (`handle_new_auth_user`, `link_judge_to_existing_auth_user`), not by
+  application code.
+- Admin accounts are created via `supabase.auth.admin.inviteUserByEmail` /
+  `createUser` with `{ data: { role: 'admin' } }`; judge invites omit `role`
+  (defaults to `judge` in the trigger).
+- `lib/data/mock/auth-repository.ts` is **not removed** — it remains the
+  default backend and stays available indefinitely per step 6.
+- No changes were needed to `lib/auth/auth-context.tsx`,
+  `lib/auth/require-role.tsx`, or any component calling
+  `authRepository.signIn(...)` / `useAuth()` — same interface, different
+  implementation, exactly as planned.
 
 ## 5. Seed real data
 

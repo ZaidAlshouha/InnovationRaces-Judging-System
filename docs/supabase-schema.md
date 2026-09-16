@@ -71,6 +71,9 @@ Unique constraint: `(hackathon_id, project_number)`.
 | status | text, not null | check in (`active`, `inactive`) |
 | created_at / updated_at | timestamptz | |
 
+`user_id` is populated automatically, not by application code — see
+"Auth linkage" below.
+
 ### `criteria`
 
 | Column | Type | Notes |
@@ -144,6 +147,10 @@ application-specific profile data:
 | name | text, not null | |
 | role | text, not null | check in (`admin`, `judge`) |
 
+No `judge_id` column: one `auth.users` account can hold multiple `judges`
+rows (one per hackathon), so "which judge is this user" can never be a
+single scalar link on `users` — see "Auth linkage" below.
+
 ### `audit_logs`
 
 | Column | Type | Notes |
@@ -163,6 +170,58 @@ application-specific profile data:
 Audit logs are append-only: no `updated_at`, no update/delete policies for
 any role except perhaps a service-role cleanup job.
 
+## Auth linkage (`002_auth_linkage.sql`)
+
+Real Supabase Auth users are never assigned synthetic IDs the way
+`lib/data/mock/auth-repository.ts` does (`user-${judge.id}`) — that file stays
+mock-only. Production linkage is handled entirely by database triggers, not
+application code, so it holds regardless of which client (web app, Supabase
+dashboard invite, admin API script) creates the auth user.
+
+**One auth user, many judges rows.** A real person can legitimately be
+invited as a judge in more than one hackathon. Each invitation is its own
+`judges` row (`judges_email_unique_per_hackathon` makes `(hackathon_id,
+email)` the unique key, not `email` alone), and `judges.user_id` has no
+uniqueness constraint — many `judges` rows are allowed to reference the same
+`auth.users.id`. There is deliberately no `users.judge_id`-style scalar
+column anywhere: "which judges row(s) does this signed-in user own" is
+always answered by querying `judges where user_id = auth.uid()`, which
+returns a set, never assumed to be a single row.
+
+- `handle_new_auth_user()` fires `after insert on auth.users` and: resolves
+  `role` from `raw_user_meta_data->>'role'` (defaults to `judge`; must be
+  explicitly set to `admin` at invite time — never inferred from email),
+  links **every** existing unlinked `judges` row that matches this email
+  (not just one — the same person may have pending invites across several
+  hackathons), then upserts the corresponding `public.users` row.
+- `link_judge_to_existing_auth_user()` fires `before insert on public.judges`
+  to cover the reverse ordering (auth user already exists when an admin
+  later invites the same person into another hackathon).
+- `current_judge_id(p_hackathon_id uuid)` replaces the old zero-argument
+  version. Given one auth user can own multiple `judges` rows, "the current
+  judge" is only well-defined once scoped to a specific hackathon — every
+  caller passes the `hackathon_id` already present on the row being checked
+  (`assignments.hackathon_id`, `evaluations.hackathon_id`, or the parent
+  evaluation's `hackathon_id` for `evaluation_scores`).
+- `is_judge()` complements the existing `is_admin()` for policies that need
+  to check judge-ness directly off `public.users`, independent of hackathon.
+
+Admin accounts must be created via `supabase.auth.admin.inviteUserByEmail` /
+`createUser` with `{ data: { role: 'admin' } }` in user metadata — there is no
+implicit admin-by-email rule in production (unlike the mock repo's
+`DEMO_ADMIN` constant).
+
+### Application-layer mirror
+
+`lib/domain/user.ts`'s `User` type mirrors this: `judgeId` (single, optional)
+is kept for backward compatibility and is what every judge has today (one
+hackathon); `judgeIdsByHackathon` (a `hackathonId -> judgeId` map) is the
+general form, with one entry for the common case and more than one only for
+a judge who serves multiple hackathons. `app/judge/page.tsx` and
+`app/judge/evaluate/[assignmentId]/page.tsx` read `judgeIdsByHackathon` when
+present and fall back to `judgeId`, so a single-hackathon judge's behavior is
+byte-for-byte unchanged.
+
 ## Row Level Security (RLS) — policy intent
 
 RLS is the actual enforcement layer; the frontend hiding UI elements is a UX
@@ -175,13 +234,15 @@ intent — exact SQL will be written when Supabase is connected.
 - **`judges`**: admins can read/write all judges in their hackathon; a judge
   can read their own row only.
 - **`assignments`**: admins have full access. A judge can `select` only rows
-  where `assignments.judge_id`'s `judges.user_id = auth.uid()`.
+  where `assignments.judge_id = current_judge_id(assignments.hackathon_id)`
+  — hackathon-scoped, since the same auth user may own a different `judges`
+  row (and thus a different set of assignments) per hackathon.
 - **`evaluations`**: admins can read all, and can update `status` only via
   the reopen action (never rewrite scores directly). A judge can
   `select`/`insert`/`update` only their own evaluations
-  (`evaluations.judge_id → judges.user_id = auth.uid()`), and only while
-  `status = 'draft'` — once `submitted`, further writes are rejected by
-  policy, not just by application logic.
+  (`evaluations.judge_id = current_judge_id(evaluations.hackathon_id)`), and
+  only while `status = 'draft'` — once `submitted`, further writes are
+  rejected by policy, not just by application logic.
 - **`evaluation_scores`**: inherits the parent evaluation's policy (a judge
   can only touch scores under their own, unlocked evaluation).
 - **`audit_logs`**: insert-only for authenticated users (via a server-side
