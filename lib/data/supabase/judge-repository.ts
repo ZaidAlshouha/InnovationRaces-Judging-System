@@ -45,6 +45,8 @@ export class SupabaseJudgeRepository implements JudgeRepository {
         hackathon_id: input.hackathonId,
         name: input.name,
         email: input.email,
+        phone: input.phone || null,
+        notes: input.notes || null,
         status: input.status ?? JudgeStatus.Active,
       })
       .select("*")
@@ -62,6 +64,8 @@ export class SupabaseJudgeRepository implements JudgeRepository {
         ...(rest.hackathonId !== undefined && { hackathon_id: rest.hackathonId }),
         ...(rest.name !== undefined && { name: rest.name }),
         ...(rest.email !== undefined && { email: rest.email }),
+        ...(rest.phone !== undefined && { phone: rest.phone || null }),
+        ...(rest.notes !== undefined && { notes: rest.notes || null }),
         ...(rest.status !== undefined && { status: rest.status }),
       })
       .eq("id", id)

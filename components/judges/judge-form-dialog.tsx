@@ -21,25 +21,19 @@ import {
   FormMessage,
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import {
   createJudgeInputSchema,
   updateJudgeInputSchema,
   JudgeStatus,
-  JUDGE_STATUS_LABELS_AR,
   type Judge,
   type CreateJudgeInput,
 } from "@/lib/domain/judge";
 import { AuditAction } from "@/lib/domain/audit-log";
 import { useCreateJudge, useUpdateJudge } from "@/lib/queries/use-judges";
 import { useRecordAuditAction } from "@/lib/queries/use-audit-log";
+import { useTranslations } from "@/lib/i18n/locale-context";
 
 interface JudgeFormDialogProps {
   open: boolean;
@@ -58,12 +52,40 @@ type JudgeFormValues = Omit<CreateJudgeInput, "status"> & {
   status: Judge["status"];
 };
 
+/**
+ * Plain judges-row editor — used ONLY for editing an existing judge's
+ * name/phone/notes (see app/admin/judges/[judgeId]/page.tsx). Judge
+ * *creation* now exclusively goes through InviteJudgeDialog
+ * (components/judges/invite-judge-dialog.tsx), which also creates the
+ * Supabase Auth account — this dialog's own create path is kept only for
+ * the rare case a judges row somehow has no create call site left (mock
+ * fixtures/tests), but is not reachable from any admin UI screen anymore.
+ *
+ * Email is READ-ONLY once a judge exists (isEditing) — deliberately: this
+ * app's Auth linkage (judges.email <-> auth.users.email, see
+ * 002_auth_linkage.sql's handle_new_auth_user()/
+ * link_judge_to_existing_auth_user() triggers) only ever matches by email
+ * at INSERT/signup time, never re-syncs on a later edit. Changing
+ * judges.email here alone would silently desync it from the judge's real
+ * Auth identity — exactly the "unsafe client-side Auth identity change"
+ * the task explicitly prohibits. There is no secure server-side email-change
+ * flow implemented in this phase, so the field is simply locked; a future
+ * phase could add one following the same requireAdminFromRequest() +
+ * service_role pattern as the invite route.
+ *
+ * `status` is intentionally NOT editable here — disable/enable goes
+ * through its own dedicated confirm-dialog flow on the judges list page
+ * (app/admin/judges/page.tsx), which also produces its own, more specific
+ * audit action (judge_disabled/judge_enabled vs the generic judge_updated
+ * this dialog still records for name/phone/notes edits).
+ */
 export function JudgeFormDialog({
   open,
   onOpenChange,
   hackathonId,
   judge,
 }: JudgeFormDialogProps) {
+  const t = useTranslations();
   const isEditing = Boolean(judge);
   const createMutation = useCreateJudge();
   const updateMutation = useUpdateJudge();
@@ -74,6 +96,8 @@ export function JudgeFormDialog({
       hackathonId,
       name: judge?.name ?? "",
       email: judge?.email ?? "",
+      phone: judge?.phone,
+      notes: judge?.notes,
       status: judge?.status ?? JudgeStatus.Active,
     }),
     [hackathonId, judge]
@@ -97,7 +121,12 @@ export function JudgeFormDialog({
   async function onSubmit(values: JudgeFormValues) {
     try {
       if (isEditing && judge) {
-        const parsed = updateJudgeInputSchema.parse({ ...values, id: judge.id });
+        const parsed = updateJudgeInputSchema.parse({
+          id: judge.id,
+          name: values.name,
+          phone: values.phone,
+          notes: values.notes,
+        });
         const updated = await updateMutation.mutateAsync(parsed);
         await recordAudit.mutateAsync({
           hackathonId: updated.hackathonId,
@@ -106,7 +135,7 @@ export function JudgeFormDialog({
           entityId: updated.id,
           summary: `تم تعديل بيانات المحكّم ${updated.name}`,
         });
-        toast.success("تم تحديث بيانات المحكّم بنجاح");
+        toast.success(t("judging.judgeUpdatedToast"));
       } else {
         const created = await createMutation.mutateAsync(values);
         await recordAudit.mutateAsync({
@@ -116,12 +145,12 @@ export function JudgeFormDialog({
           entityId: created.id,
           summary: `تمت إضافة المحكّم ${created.name}`,
         });
-        toast.success("تمت إضافة المحكّم بنجاح");
+        toast.success(t("judging.judgeCreatedToast"));
       }
       onOpenChange(false);
     } catch (error) {
       toast.error(
-        error instanceof Error ? error.message : "حدث خطأ أثناء حفظ البيانات"
+        error instanceof Error ? error.message : t("judging.genericSaveError")
       );
     }
   }
@@ -130,15 +159,12 @@ export function JudgeFormDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-md">
+      <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-md">
         <DialogHeader>
           <DialogTitle>
-            {isEditing ? "تعديل بيانات المحكّم" : "إضافة محكّم جديد"}
+            {isEditing ? t("judging.editJudgeTitle") : t("judging.addJudgeTitle")}
           </DialogTitle>
-          <DialogDescription>
-            سيتمكن المحكّم من الدخول عبر بريده الإلكتروني لتقييم المشاريع
-            المُسندة إليه فقط.
-          </DialogDescription>
+          <DialogDescription>{t("judging.judgeFormDescription")}</DialogDescription>
         </DialogHeader>
 
         <Form {...form}>
@@ -151,9 +177,9 @@ export function JudgeFormDialog({
               name="name"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>الاسم</FormLabel>
+                  <FormLabel>{t("judging.nameLabel")}</FormLabel>
                   <FormControl>
-                    <Input placeholder="مثال: أحمد المطيري" {...field} />
+                    <Input placeholder={t("judging.namePlaceholder")} {...field} />
                   </FormControl>
                   <FormMessage />
                 </FormItem>
@@ -165,12 +191,13 @@ export function JudgeFormDialog({
               name="email"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>البريد الإلكتروني</FormLabel>
+                  <FormLabel>{t("judging.columnEmail")}</FormLabel>
                   <FormControl>
                     <Input
                       type="email"
                       dir="ltr"
-                      placeholder="name@example.com"
+                      placeholder={t("judging.emailPlaceholder")}
+                      disabled={isEditing}
                       {...field}
                     />
                   </FormControl>
@@ -181,24 +208,37 @@ export function JudgeFormDialog({
 
             <FormField
               control={form.control}
-              name="status"
+              name="phone"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>الحالة</FormLabel>
-                  <Select value={field.value} onValueChange={field.onChange}>
-                    <FormControl>
-                      <SelectTrigger className="w-full">
-                        <SelectValue placeholder="اختر الحالة" />
-                      </SelectTrigger>
-                    </FormControl>
-                    <SelectContent>
-                      {Object.values(JudgeStatus).map((status) => (
-                        <SelectItem key={status} value={status}>
-                          {JUDGE_STATUS_LABELS_AR[status]}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                  <FormLabel>{t("judging.phoneOptionalLabel")}</FormLabel>
+                  <FormControl>
+                    <Input
+                      type="tel"
+                      dir="ltr"
+                      placeholder={t("judging.phonePlaceholder")}
+                      {...field}
+                      value={field.value ?? ""}
+                    />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+
+            <FormField
+              control={form.control}
+              name="notes"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>{t("judging.notesLabel")}</FormLabel>
+                  <FormControl>
+                    <Textarea
+                      placeholder={t("judging.notesPlaceholder")}
+                      {...field}
+                      value={field.value ?? ""}
+                    />
+                  </FormControl>
                   <FormMessage />
                 </FormItem>
               )}
@@ -210,10 +250,10 @@ export function JudgeFormDialog({
                 variant="outline"
                 onClick={() => onOpenChange(false)}
               >
-                إلغاء
+                {t("judging.cancel")}
               </Button>
               <Button type="submit" disabled={isSubmitting}>
-                {isSubmitting ? "جارٍ الحفظ..." : "حفظ"}
+                {isSubmitting ? t("judging.saving") : t("judging.save")}
               </Button>
             </DialogFooter>
           </form>

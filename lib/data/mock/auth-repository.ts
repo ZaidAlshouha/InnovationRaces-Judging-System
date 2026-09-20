@@ -25,9 +25,12 @@ function findJudgeUser(email: string): User | null {
   // A real auth identity can hold one judges row per hackathon (see
   // docs/supabase-schema.md "Auth linkage"), so match every row sharing
   // this email, not just the first — mirrors handle_new_auth_user() in
-  // supabase/migrations/002_auth_linkage.sql.
+  // supabase/migrations/002_auth_linkage.sql. Only `active` rows count —
+  // mirrors buildDomainUser()'s own `.eq("status", "active")` filter
+  // (lib/data/supabase/shared.ts) so a disabled judge sees zero
+  // assignments in mock mode exactly like the real backend.
   const judges = getMockStore().judges.filter(
-    (j) => j.email.toLowerCase() === email.toLowerCase()
+    (j) => j.email.toLowerCase() === email.toLowerCase() && j.status === "active"
   );
   const [primary] = judges;
   if (!primary) return null;
