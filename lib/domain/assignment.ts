@@ -15,6 +15,12 @@ export const ASSIGNMENT_STATUS_LABELS_AR: Record<AssignmentStatus, string> = {
   [AssignmentStatus.Completed]: "مكتمل",
 };
 
+export const ASSIGNMENT_STATUS_LABELS_EN: Record<AssignmentStatus, string> = {
+  [AssignmentStatus.Pending]: "Pending",
+  [AssignmentStatus.InProgress]: "In Progress",
+  [AssignmentStatus.Completed]: "Completed",
+};
+
 export const assignmentSchema = z.object({
   id: z.string(),
   hackathonId: z.string(),

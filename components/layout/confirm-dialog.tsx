@@ -9,6 +9,7 @@ import {
   DialogDescription,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
+import { useLocale } from "@/lib/i18n/locale-context";
 
 interface ConfirmDialogProps {
   open: boolean;
@@ -28,12 +29,13 @@ export function ConfirmDialog({
   onOpenChange,
   title,
   description,
-  confirmLabel = "تأكيد",
-  cancelLabel = "إلغاء",
+  confirmLabel,
+  cancelLabel,
   variant = "default",
   isLoading = false,
   onConfirm,
 }: ConfirmDialogProps) {
+  const { t } = useLocale();
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-sm">
@@ -47,7 +49,7 @@ export function ConfirmDialog({
             variant="outline"
             onClick={() => onOpenChange(false)}
           >
-            {cancelLabel}
+            {cancelLabel ?? t("common.cancel")}
           </Button>
           <Button
             type="button"
@@ -55,7 +57,7 @@ export function ConfirmDialog({
             disabled={isLoading}
             onClick={onConfirm}
           >
-            {isLoading ? "جارٍ التنفيذ..." : confirmLabel}
+            {isLoading ? t("common.processing") : (confirmLabel ?? t("common.confirm"))}
           </Button>
         </DialogFooter>
       </DialogContent>
